@@ -92,7 +92,7 @@ class JudgeEngine:
                 cdir = os.path.join(config.SUBMISSIONS_DIR, cid)
                 for uid in list_files(cdir):
                     shard = read_json(os.path.join(cdir, uid + ".json"))
-                    if not shard:
+                    if not isinstance(shard, dict):
                         continue
                     for s in shard.get("submissions", []):
                         self._index[s["id"]] = (cid, uid)
@@ -137,7 +137,8 @@ class JudgeEngine:
 
     def _append_shard(self, sub):
         def _upd(shard):
-            if shard is None:
+            if not isinstance(shard, dict):
+                # 分片不存在或已损坏：以新分片重新开始
                 shard = {"contest_id": sub["contest_id"], "user_id": sub["user_id"],
                          "submissions": []}
             shard.setdefault("submissions", []).append(sub)
@@ -153,7 +154,7 @@ class JudgeEngine:
         updated = {}
 
         def _upd(shard):
-            if not shard:
+            if not isinstance(shard, dict):
                 return shard
             for s in shard.get("submissions", []):
                 if s["id"] == sub_id:
@@ -408,7 +409,7 @@ class JudgeEngine:
         if contest_id is None:
             return None
         shard = _read_shard(contest_id, user_id)
-        if not shard:
+        if not isinstance(shard, dict):
             return None
         for s in shard.get("submissions", []):
             if s["id"] == sub_id:
@@ -437,7 +438,7 @@ class JudgeEngine:
                 cdir = _submission_dir(contest_id)
                 for uid in list_files(cdir):
                     shard = read_json(os.path.join(cdir, uid + ".json"))
-                    if not shard:
+                    if not isinstance(shard, dict):
                         continue
                     for s in shard.get("submissions", []):
                         if user_id and s["user_id"] != user_id:

@@ -59,6 +59,29 @@
       </div>
     </div>
 
+    <!-- 自定义运行（自测） -->
+    <div class="card">
+      <div class="card-title">
+        <span>🔧 自定义运行（自测）</span>
+        <span class="hint">仅自测：不判对错、不计成绩、不产生提交记录</span>
+      </div>
+      <div class="form-group">
+        <label>标准输入（stdin）</label>
+        <textarea id="runInput" class="mono" rows="5" spellcheck="false"
+          placeholder="在此填写程序运行时需要从标准输入读取的数据，可为空"></textarea>
+      </div>
+      <div class="flex gap-12 wrap" style="align-items:center">
+        <button class="btn btn-primary" id="runBtn" onclick="customRun()">▶ 运行</button>
+        <span class="hint">自测限制：时间 5s · 内存 256MB · 输出过长将截断展示</span>
+      </div>
+      <div id="runResult" class="hidden mt-16">
+        <div class="flex gap-12 wrap" style="align-items:center" id="runHead"></div>
+        <div id="runStdoutBox"></div>
+        <div id="runStderrBox"></div>
+        <div id="runMsgBox"></div>
+      </div>
+    </div>
+
     <!-- 评测结果 -->
     <div class="card hidden" id="resultCard">
       <div class="card-title">评测结果 <span id="resultBadge"></span></div>
@@ -222,6 +245,76 @@
         : `<tr><td colspan="6" class="empty">等待评测…</td></tr>`;
       const cm = document.getElementById("compileMsg");
       cm.innerHTML = s.compile_message ? `<pre class="code">${OJ_.esc(s.compile_message)}</pre>` : "";
+    }
+
+    /* ---------- 自定义运行（自测） ---------- */
+    const RUN_LABEL = {
+      OK:  ["运行完成", "AC"],
+      CE:  ["编译失败", "CE"],
+      TLE: ["运行超时", "TLE"],
+      MLE: ["超出内存", "MLE"],
+      OLE: ["输出超限", "OLE"],
+      RE:  ["运行时错误", "RE"],
+      SE:  ["系统错误", "SE"],
+    };
+
+    async function customRun() {
+      const user = OJ_.currentUser();
+      if (!user) { OJ_.toast("请先登录后运行", "error"); location.href = "/index.html?login=1"; return; }
+      const code = getCode();
+      if (!code.trim()) { OJ_.toast("代码不能为空", "error"); return; }
+      const btn = document.getElementById("runBtn");
+      btn.disabled = true; btn.textContent = "运行中…";
+      document.getElementById("runResult").classList.remove("hidden");
+      document.getElementById("runHead").innerHTML = `<span class="badge PENDING pulse">运行中</span>`;
+      document.getElementById("runStdoutBox").innerHTML = "";
+      document.getElementById("runStderrBox").innerHTML = "";
+      document.getElementById("runMsgBox").innerHTML = "";
+      try {
+        const res = await OJ_.api("/run", { method: "POST", body: {
+          code,
+          language: document.getElementById("langSelect").value,
+          input: document.getElementById("runInput").value,
+        }});
+        renderRunResult(res);
+      } catch (e) {
+        // 网络错误 / 请求被拒绝也要在结果区给出提示，不留空白
+        document.getElementById("runHead").innerHTML = `<span class="badge SE">运行失败</span>`;
+        document.getElementById("runMsgBox").innerHTML =
+          `<div class="hint mt-8" style="color:var(--red)">${OJ_.esc(e.message)}</div>`;
+      } finally {
+        btn.disabled = false; btn.textContent = "▶ 运行";
+      }
+    }
+
+    function renderRunResult(r) {
+      const [label, cls] = RUN_LABEL[r.status] || [r.status || "未知", "SE"];
+      document.getElementById("runHead").innerHTML =
+        `<span class="badge ${cls}">${label}</span>` +
+        `<span class="muted mono">耗时 ${OJ_.fmtDuration(r.time_ms)}</span>` +
+        `<span class="muted mono">内存 ${OJ_.fmtMem(r.memory_kb)}</span>`;
+      // 标准输出
+      let out = "";
+      if (r.stdout) {
+        out += `<div class="run-label">标准输出</div><pre class="code light run-output">${OJ_.esc(r.stdout)}</pre>`;
+        if (r.stdout_truncated) out += `<div class="hint">⚠ 输出过长，已截断，仅显示前一部分</div>`;
+      } else if (r.status === "OK") {
+        out += `<div class="run-label">标准输出</div><div class="muted">（程序没有输出）</div>`;
+      }
+      document.getElementById("runStdoutBox").innerHTML = out;
+      // 错误输出
+      let errHtml = "";
+      if (r.stderr) {
+        errHtml += `<div class="run-label">错误输出（stderr）</div><pre class="code light run-output">${OJ_.esc(r.stderr)}</pre>`;
+        if (r.stderr_truncated) errHtml += `<div class="hint">⚠ 错误输出过长，已截断</div>`;
+      }
+      document.getElementById("runStderrBox").innerHTML = errHtml;
+      // 编译信息 / 状态提示
+      let msg = "";
+      if (r.compile_message)
+        msg += `<div class="run-label">编译信息</div><pre class="code run-output">${OJ_.esc(r.compile_message)}</pre>`;
+      if (r.message) msg += `<div class="hint mt-8">${OJ_.esc(r.message)}</div>`;
+      document.getElementById("runMsgBox").innerHTML = msg;
     }
 
     initEditor();

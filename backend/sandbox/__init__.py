@@ -58,7 +58,11 @@ def _empty_result(status=ST_SE, message=""):
 
 def _read_fd_capped(fd, cap_bytes):
     """读取一个文件描述符直到 EOF，但只保留前 cap_bytes，
-    统计总字节数，防止子进程输出撑爆内存（OLE 判定依据）。"""
+    统计总字节数，防止子进程输出撑爆内存（OLE 判定依据）。
+
+    注意：本函数不关闭 fd，由调用方统一关闭——在读线程里关闭后
+    主线程再关闭会造成「重复关闭」，fd 编号被其他线程复用时
+    会误关他人文件（曾导致提交分片被写坏）。"""
     chunks = []
     total = 0
     keep = cap_bytes
@@ -74,10 +78,6 @@ def _read_fd_capped(fd, cap_bytes):
             take = chunk[:keep]
             chunks.append(take)
             keep -= len(take)
-    try:
-        os.close(fd)
-    except OSError:
-        pass
     return b"".join(chunks), total
 
 
@@ -219,9 +219,11 @@ class NativeSandbox:
                     time_limit_ms / 1000.0, memory_limit_kb
                 ),
             )
-            # 关闭父进程侧写端
+            # 关闭父进程侧写端（置 None 防止 finally 重复关闭）
             os.close(stdout_w)
+            stdout_w = None
             os.close(stderr_w)
+            stderr_w = None
 
             watchdog.start()
 
@@ -306,7 +308,11 @@ class NativeSandbox:
         finally:
             if watchdog is not None:
                 watchdog.cancel()
-            for fd in (stdout_r, stderr_r):
+            # 统一在此关闭全部管道 fd，且每个只关一次：
+            # 读端在读线程 join 后关闭；写端若因 Popen 失败未关也在此关闭
+            for fd in (stdout_r, stderr_r, stdout_w, stderr_w):
+                if fd is None:
+                    continue
                 try:
                     os.close(fd)
                 except OSError:
