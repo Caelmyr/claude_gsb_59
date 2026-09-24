@@ -109,8 +109,13 @@ class NativeSandbox:
             # 文件大小上限（防止写超大文件）
             limits(resource.RLIMIT_FSIZE)  # 占位，保持接口一致
             resource.setrlimit(resource.RLIMIT_FSIZE, (256 * 1024 * 1024, 256 * 1024 * 1024))
-            # 进程数上限
-            resource.setrlimit(resource.RLIMIT_NPROC, (64, 64))
+            # 进程数上限。
+            # 注意 Linux 下 RLIMIT_NPROC 限制的是「同一真实 UID 的全局进程/线程
+            # 总数」而非子进程树大小，且 glibc 的 vfork 在计数时包含环境中的全部
+            # 线程；值过小（如 64）会导致 g++/javac 无法 vfork 出 cc1plus 而表现
+            # 为「编译超时」。取 2048 兼顾编译器需求与 fork 炸弹防护，真正的
+            # 进程数硬隔离在 Docker 后端由 --pids-limit / cgroup 保证。
+            resource.setrlimit(resource.RLIMIT_NPROC, (2048, 2048))
             # 文件描述符上限
             resource.setrlimit(resource.RLIMIT_NOFILE, (128, 128))
         except (ValueError, OSError):
@@ -282,6 +287,10 @@ class NativeSandbox:
                 }
             else:
                 state = ST_OK
+                if returncode != 0:
+                    # 非零退出（如 Python 未捕获异常退出码 1、Java 异常退出码 1、
+                    # 程序显式 return 非 0）属于运行错误。
+                    state = ST_RE
                 if mem_kb > memory_limit_kb:
                     state = ST_MLE
                 if out_total > output_cap:
@@ -294,7 +303,7 @@ class NativeSandbox:
                     "memory_kb": mem_kb,
                     "stdout": stdout.decode("utf-8", "replace"),
                     "stderr": stderr.decode("utf-8", "replace"),
-                    "message": "",
+                    "message": f"非零退出码 {returncode}" if returncode != 0 else "",
                 }
             if watchdog_hit := elapsed_ms > time_limit_ms:
                 # 即使正常退出但超时，也判 TLE

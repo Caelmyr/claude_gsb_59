@@ -19,6 +19,7 @@
       </div>
       <div class="flex gap-8">
         <a class="btn btn-outline" id="backLink" href="/index.html">← 返回</a>
+        <button class="btn btn-outline" id="runTopBtn" onclick="runCustom()">▶ 自测运行</button>
         <button class="btn btn-primary btn-lg" id="submitBtn" onclick="submit()">🚀 提交评测</button>
       </div>
     </div>
@@ -56,6 +57,34 @@
           <button class="btn btn-outline btn-sm" onclick="resetTemplate()">↺ 重置模板</button>
         </div>
         <textarea id="codeEditor" class="editor-fallback" spellcheck="false"></textarea>
+      </div>
+    </div>
+
+    <!-- 自定义运行（自测，不判题 / 不计分 / 不留提交记录） -->
+    <div class="card">
+      <div class="card-title">
+        <span>🧪 自测运行</span>
+        <span class="hint">填写一组自定义输入试运行，仅展示程序输出与耗时，不判对错、不计成绩、不产生提交记录</span>
+      </div>
+      <div class="run-grid">
+        <div class="run-pane">
+          <div class="run-pane-head">
+            <label for="runInput">自定义输入（stdin）</label>
+            <button class="btn btn-outline btn-sm" type="button" onclick="clearRunInput()">清空</button>
+          </div>
+          <textarea id="runInput" class="run-io" spellcheck="false" placeholder="在这里输入这组测试数据，例如：&#10;3&#10;1 2 3"></textarea>
+        </div>
+        <div class="run-pane">
+          <div class="run-pane-head">
+            <label>程序输出（stdout）</label>
+            <span class="hint" id="runMeta"></span>
+          </div>
+          <div id="runOutput" class="run-io run-out muted">点击「▶ 自测运行」后在此查看输出</div>
+        </div>
+      </div>
+      <div class="run-actions">
+        <button class="btn btn-primary" id="runBtn" type="button" onclick="runCustom()">▶ 自测运行</button>
+        <span class="hint">自测与正式提交相互独立，不会影响判题流程</span>
       </div>
     </div>
 
@@ -136,6 +165,7 @@
         const pid = new URLSearchParams(location.search).get("id");
         if (pid) sel.value = pid;
         onProblemChange();
+        restoreRunInput();
       } catch (e) { sel.innerHTML = '<option>加载失败</option>'; }
     }
 
@@ -224,9 +254,131 @@
       cm.innerHTML = s.compile_message ? `<pre class="code">${OJ_.esc(s.compile_message)}</pre>` : "";
     }
 
+    // ---- 自定义运行（自测）----
+    const RUN_STATUS_TEXT = {
+      OK: "运行完成", TLE: "超时", MLE: "内存超限", OLE: "输出超限",
+      RE: "运行错误", CE: "编译失败", SE: "环境错误", BUSY: "运行繁忙",
+    };
+    const RUN_STATUS_BADGE = {
+      OK: "AC", TLE: "TLE", MLE: "MLE", OLE: "OLE",
+      RE: "RE", CE: "CE", SE: "SE", BUSY: "PENDING",
+    };
+    let running = false;
+
+    function runStorageKey() {
+      return "oj_run_input:" + document.getElementById("problemSelect").value +
+        ":" + document.getElementById("langSelect").value;
+    }
+    function saveRunInput() {
+      try { localStorage.setItem(runStorageKey(), document.getElementById("runInput").value); } catch (e) {}
+    }
+    function restoreRunInput() {
+      let v = "";
+      try { v = localStorage.getItem(runStorageKey()) || ""; } catch (e) {}
+      document.getElementById("runInput").value = v;
+    }
+    function clearRunInput() {
+      document.getElementById("runInput").value = "";
+      saveRunInput();
+      document.getElementById("runInput").focus();
+    }
+
+    async function runCustom() {
+      if (running) return;
+      const user = OJ_.currentUser();
+      if (!user) { OJ_.toast("请先登录后再自测运行", "error"); location.href = "/index.html?login=1"; return; }
+      const code = getCode();
+      if (!code.trim()) { OJ_.toast("代码不能为空", "error"); return; }
+      saveRunInput();
+
+      running = true;
+      const btn = document.getElementById("runBtn");
+      const topBtn = document.getElementById("runTopBtn");
+      btn.disabled = true; btn.innerHTML = '<span class="spinner"></span> 运行中…';
+      topBtn.disabled = true;
+      document.getElementById("runMeta").textContent = "";
+      const out = document.getElementById("runOutput");
+      out.className = "run-io run-out";
+      out.innerHTML = '<span class="muted"><span class="spinner"></span> 正在编译并运行，请稍候…</span>';
+
+      try {
+        const res = await OJ_.api("/run", {
+          method: "POST",
+          body: {
+            code,
+            language: document.getElementById("langSelect").value,
+            stdin: document.getElementById("runInput").value,
+            problem_id: document.getElementById("problemSelect").value || null,
+          },
+        });
+        renderRunResult(res);
+      } catch (e) {
+        // 网络异常 / 限流 / 请求体过大等：同样要给出人能看懂的提示，不能空白
+        document.getElementById("runMeta").textContent = "";
+        out.className = "run-io run-out run-error";
+        out.innerHTML = `<div class="run-status-msg run-msg-error">⚠ ${OJ_.esc(e.message || "运行失败，请稍后重试")}</div>`;
+      } finally {
+        running = false;
+        btn.disabled = false; btn.textContent = "▶ 自测运行";
+        topBtn.disabled = false;
+      }
+    }
+
+    function renderRunResult(r) {
+      const out = document.getElementById("runOutput");
+      const meta = document.getElementById("runMeta");
+      const isOk = r.status === "OK";
+      out.className = "run-io run-out" + (isOk ? "" : " run-error");
+
+      const badgeClass = RUN_STATUS_BADGE[r.status] || "SE";
+      const statusText = RUN_STATUS_TEXT[r.status] || r.status;
+      const msg = OJ_.esc(r.message || "");
+      let html = `<div class="run-status-msg run-msg-${isOk ? "ok" : "error"}">` +
+        `<span class="badge ${badgeClass}">${OJ_.esc(statusText)}</span> <span>${msg}</span></div>`;
+
+      if (isOk) {
+        const stdout = r.stdout === "" ? null : r.stdout;
+        if (stdout === null) {
+          html += '<div class="muted run-empty">（程序没有输出任何内容）</div>';
+        } else {
+          html += `<pre class="run-pre">${OJ_.esc(stdout)}</pre>`;
+        }
+      } else {
+        // 非 OK：编译错误 / 运行错误等优先展示 stderr / 编译器信息
+        const detail = r.stderr || "";
+        if (detail.trim()) {
+          const label = r.status === "CE" ? "编译器输出：" : "错误输出（stderr）：";
+          html += `<div class="run-err-label">${label}</div><pre class="run-pre run-pre-err">${OJ_.esc(detail)}</pre>`;
+        } else if (r.status !== "BUSY" && r.status !== "TLE" && r.status !== "MLE") {
+          html += '<div class="muted run-empty">（没有额外的错误输出）</div>';
+        }
+        // 崩溃前可能已经产出的部分 stdout 也展示出来，方便定位
+        if (r.stdout && r.stdout.length) {
+          html += `<div class="run-err-label">崩溃前的标准输出：</div><pre class="run-pre">${OJ_.esc(r.stdout)}</pre>`;
+        }
+      }
+
+      if (r.truncated) {
+        html += `<div class="run-trunc">⚠ 输出过长，仅展示前 ${(r.output_limit_chars || 16384).toLocaleString()} 个字符，后面的内容已省略</div>`;
+      }
+      out.innerHTML = html;
+
+      const parts = [];
+      parts.push("耗时 " + OJ_.fmtDuration(r.time_ms));
+      if (r.memory_kb) parts.push("内存 " + OJ_.fmtMem(r.memory_kb));
+      if (r.language_name) parts.push(r.language_name);
+      if (r.time_limit_ms) parts.push(`时限 ${r.time_limit_ms}ms`);
+      meta.textContent = parts.join(" · ");
+    }
+
+    // 输入按 题目+语言 记忆，切换选择时恢复
+    document.getElementById("runInput").addEventListener("input", saveRunInput);
+    document.getElementById("problemSelect").addEventListener("change", restoreRunInput);
+    document.getElementById("langSelect").addEventListener("change", restoreRunInput);
+    restoreRunInput();
+
     initEditor();
     loadProblems();
-    loadContests();
-  </script>
+    loadContests();  </script>
 </body>
 </html>
